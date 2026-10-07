@@ -32,3 +32,19 @@ Tam ifade için arama metnini çift tırnakla sarın (`'"kira tespiti"'`). Daire
 - yargi-mcp 0.2.x, `fastmcp` 3.x / `mcp` 2.x ile çöker; bu yüzden istemci sunucuyu `fastmcp>=2.10.5,<3` sabitlemesiyle başlatır.
 - Sunucu komutunu `YARGI_MCP_CMD` ortam değişkeniyle değiştirebilirsiniz (örn. `yargi-mcp`).
 - Her komut sunucuyu yeniden başlatır; ilk çalıştırma paketleri indirdiği için yavaştır.
+
+
+---
+
+## CLAUDE DESKTOP BU MCP EKLEME
+`claude_desktop_config.json` dosyasına aşağıdaki bölüm eklenecek. Örnek bir dosya yolu `C:\Users\alper\AppData\Local\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\claude_desktop_config.json`
+
+```json
+ "coworkUserFilesPath": "C:\\Users\\alper\\Claude",
+  "mcpServers": {
+    "Yargı MCP": {
+      "command": "C:\\Users\\alper\\.local\\bin\\uvx.exe",
+      "args": ["--with", "fastmcp>=2.10.5,<3", "yargi-mcp"]
+    }
+  }
+```
