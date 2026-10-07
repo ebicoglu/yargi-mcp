@@ -1,5 +1,5 @@
-# -------- BASE IMAGE (includes Chromium & deps) ----------------------------
-FROM mcr.microsoft.com/playwright/python:v1.53.0-noble
+# -------- BASE IMAGE ---------------------------------------------------------
+FROM python:3.12-slim
 
 # -------- Runtime setup ----------------------------------------------------
 WORKDIR /app
@@ -9,10 +9,11 @@ COPY pyproject.toml poetry.lock* requirements*.txt* ./
 
 # Fast, deterministic install with `uv`
 RUN pip install --no-cache-dir uv && \
+    uv pip install --system --no-cache-dir . && \
     uv pip install --system --no-cache-dir .[asgi,saas]
 
 # Cache buster - force rebuild
-ARG CACHE_BUST=202507221015
+ARG CACHE_BUST=202510061202
 RUN echo "Cache bust: $CACHE_BUST"
 
 # Copy application source

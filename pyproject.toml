@@ -1,6 +1,6 @@
 [project]
 name = "yargi-mcp"
-version = "0.1.6"
+version = "0.2.0"
 description = "MCP Server For Turkish Legal Databases"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -25,12 +25,12 @@ dependencies = [
     "markitdown[pdf]>=0.1.1",
     "pydantic>=2.11.4",
     "aiohttp>=3.11.18",
-    "playwright>=1.52.0",
     "fastmcp>=2.10.5",
     "pypdf>=5.5.0",
     "fastapi>=0.115.14",
-    "PyJWT>=2.8.0",
-    "tiktoken>=0.5.0",
+    "cryptography>=44.0.0",
+    "openai>=1.0.0",
+    "numpy>=1.24.0",
 ]
 
 [project.optional-dependencies]
@@ -50,6 +50,8 @@ saas = [
     "clerk-backend-api>=3.0.0",
     "stripe>=9.1.0",
     "upstash-redis>=1.1.0",
+    "tiktoken>=0.5.0",
+    "PyJWT>=2.8.0",
 ]
 
 [project.scripts]
@@ -59,7 +61,7 @@ yargi-mcp = "mcp_server_main:main"
 py-modules = ["mcp_server_main", "mcp_auth_factory", "mcp_auth_http_adapter", "asgi_app", "fastapi_app", "starlette_app", "run_asgi", "stripe_webhook"]
 
 [tool.setuptools.packages.find]
-include = ["*_mcp_module", "mcp_auth"]
+include = ["*_mcp_module", "mcp_auth", "semantic_search"]
 
 [build-system]
 requires = ["setuptools>=65.0", "wheel"]

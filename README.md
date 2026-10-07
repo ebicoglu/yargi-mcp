@@ -1,8 +1,53 @@
 # Yargı MCP: Türk Hukuk Kaynakları için MCP Sunucusu
 
+## Word'den UDF'ye profesyonel dönüşüm için yeni uygulamam [udfcevir.com](https://udfcevir.com) adresinde! 
+
 [![Star History Chart](https://api.star-history.com/svg?repos=saidsurucu/yargi-mcp&type=Date)](https://www.star-history.com/#saidsurucu/yargi-mcp&Date)
 
 Bu proje, çeşitli Türk hukuk kaynaklarına (Yargıtay, Danıştay, Emsal Kararlar, Uyuşmazlık Mahkemesi, Anayasa Mahkemesi - Norm Denetimi ile Bireysel Başvuru Kararları, Kamu İhale Kurulu Kararları, Rekabet Kurumu Kararları, Sayıştay Kararları, KVKK Kararları ve BDDK Kararları) erişimi kolaylaştıran bir [FastMCP](https://gofastmcp.com/) sunucusu oluşturur. Bu sayede, bu kaynaklardan veri arama ve belge getirme işlemleri, Model Context Protocol (MCP) destekleyen LLM (Büyük Dil Modeli) uygulamaları (örneğin Claude Desktop veya [5ire](https://5ire.app)) ve diğer istemciler tarafından araç (tool) olarak kullanılabilir hale gelir.
+
+---
+
+## 🚀 5 Dakikada Başla (Remote MCP)
+
+### ✅ Kurulum Gerektirmez! Hemen Kullan!
+
+🔗 **Remote MCP Adresi:** `https://yargimcp.fastmcp.app/mcp`
+
+### Claude Desktop ile Kullanım (Ücretli abonelik gerekir)
+
+1. **Claude Desktop'ı açın**
+2. **Settings → Connectors → Add Custom Connector**
+3. **Bilgileri girin:**
+   - **Name:** `Yargı MCP`
+   - **URL:** `https://yargimcp.fastmcp.app/mcp`
+4. **Add** butonuna tıklayın
+5. **Hemen kullanmaya başlayın!** 🎉
+
+### Google Antigravity ile Kullanım
+
+1. **Agent session** açın ve editörün yan panelindeki **"…"** dropdown menüsüne tıklayın
+2. **MCP Servers** seçeneğini seçin - MCP Store açılacak
+3. Üstteki **Manage MCP Servers** butonuna tıklayın
+4. **View raw config** seçeneğine tıklayın
+5. `mcp_config.json` dosyasına aşağıdaki yapılandırmayı ekleyin:
+
+```json
+{
+  "mcpServers": {
+    "yargi-mcp": {
+      "serverUrl": "https://yargimcp.fastmcp.app/mcp/",
+      "headers": {
+        "Content-Type": "application/json"
+      }
+    }
+  }
+}
+```
+
+> 💡 **İpucu:** Remote MCP sayesinde Python, uv veya herhangi bir kurulum yapmadan doğrudan Claude Desktop üzerinden Türk hukuk kaynaklarına erişebilirsiniz!
+
+---
 
 ![örnek](./ornek.png)
 
@@ -132,10 +177,65 @@ Yargı MCP'yi Gemini CLI ile kullanmak için:
 
 </details>
 
+---
+<details>
+<summary>🧠 <strong>Semantik Arama (Opsiyonel - OpenRouter API)</strong></summary>
+
+Yargı MCP, **semantik arama** özelliği ile kararları anlamsal olarak sıralayabilir. Bu özellik opsiyoneldir ve `OPENROUTER_API_KEY` ayarlandığında otomatik olarak etkinleşir.
+
+### Semantik Arama Nasıl Çalışır?
+1. `initial_keyword` ile Bedesten API'den 100 karar çekilir
+2. `query` ile bu kararlar embedding modeli kullanılarak anlamsal olarak sıralanır
+3. En alakalı kararlar döndürülür
+
+### OpenRouter API Anahtarı Alma
+1. [OpenRouter](https://openrouter.ai/) sitesine gidin
+2. Hesap oluşturun ve API anahtarı alın (ücretsiz kredi ile başlayabilirsiniz)
+
+### Claude Desktop için Yapılandırma
+```json
+{
+  "mcpServers": {
+    "Yargı MCP": {
+      "command": "uvx",
+      "args": ["yargi-mcp"],
+      "env": {
+        "OPENROUTER_API_KEY": "sk-or-v1-xxx..."
+      }
+    }
+  }
+}
+```
+
+### 5ire için Yapılandırma
+Tool ayarlarında **Environment Variables** alanına ekleyin:
+```
+OPENROUTER_API_KEY=sk-or-v1-xxx...
+```
+
+### Gemini CLI için Yapılandırma
+```json
+{
+  "mcpServers": {
+    "yargi_mcp": {
+      "command": "uvx",
+      "args": ["yargi-mcp"],
+      "env": {
+        "OPENROUTER_API_KEY": "sk-or-v1-xxx..."
+      }
+    }
+  }
+}
+```
+
+> 💡 **Not:** `OPENROUTER_API_KEY` ayarlanmazsa semantik arama aracı görünmez, diğer 19 araç normal şekilde çalışmaya devam eder.
+
+</details>
+
 <details>
 <summary>🛠️ <strong>Kullanılabilir Araçlar (MCP Tools)</strong></summary>
 
-Bu FastMCP sunucusu **19 optimize edilmiş MCP aracı** sunar (token verimliliği için optimize edilmiş):
+Bu FastMCP sunucusu **19 temel MCP aracı** + **1 opsiyonel semantik arama aracı** sunar (token verimliliği için optimize edilmiş):
 
 ### **Yargıtay Araçları (Birleşik Bedesten API - Token Optimized)**
 *Not: Yargıtay araçları token verimliliği için birleşik Bedesten API'ye entegre edilmiştir*
@@ -200,7 +300,7 @@ Bu FastMCP sunucusu **19 optimize edilmiş MCP aracı** sunar (token verimliliğ
 
 **GENEL İSTATİSTİKLER:**
 - **Toplam Mahkeme/Kurum:** 13 farklı hukuki kurum (KVKK dahil)
-- **Toplam MCP Tool:** 19 optimize edilmiş arama ve belge getirme aracı  
+- **Toplam MCP Tool:** 19 temel araç + 1 opsiyonel semantik arama aracı  
 - **Daire/Kurul Filtreleme:** 87 farklı seçenek (52 Yargıtay + 27 Danıştay + 8 Sayıştay)
 - **Tarih Filtreleme:** Birleşik Bedesten API aracında ISO 8601 formatında tam tarih aralığı desteği
 - **Kesin Cümle Arama:** Birleşik Bedesten API aracında çift tırnak ile tam cümle arama (`"\"mülkiyet kararı\""` formatı)

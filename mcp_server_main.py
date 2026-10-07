@@ -2,16 +2,21 @@
 import asyncio
 import atexit
 import logging
-import os
 import httpx
 import json
 import time
 from collections import defaultdict
-from pydantic import HttpUrl, Field 
-from typing import Optional, Dict, List, Literal, Any, Union
-import urllib.parse
-import tiktoken
+from pydantic import HttpUrl, Field
+from typing import Optional, Dict, List, Literal, Any
 from fastmcp.server.middleware import Middleware, MiddlewareContext
+
+# Optional tiktoken import for token counting
+try:
+    import tiktoken
+    TIKTOKEN_AVAILABLE = True
+except ImportError:
+    TIKTOKEN_AVAILABLE = False
+    tiktoken = None
 from fastmcp.server.dependencies import get_access_token, AccessToken
 from fastmcp import Context
 
@@ -21,24 +26,13 @@ class ToolError(Exception):
     pass
 
 # --- Logging Configuration Start ---
-LOG_DIRECTORY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
-if not os.path.exists(LOG_DIRECTORY):
-    os.makedirs(LOG_DIRECTORY)
-LOG_FILE_PATH = os.path.join(LOG_DIRECTORY, "mcp_server.log")
-
 root_logger = logging.getLogger()
-root_logger.setLevel(logging.DEBUG) 
-
-log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(threadName)s - %(message)s')
-
-file_handler = logging.FileHandler(LOG_FILE_PATH, mode='a', encoding='utf-8')
-file_handler.setFormatter(log_formatter)
-file_handler.setLevel(logging.DEBUG)
-root_logger.addHandler(file_handler)
+root_logger.setLevel(logging.INFO)
 
 console_handler = logging.StreamHandler()
+log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 console_handler.setFormatter(log_formatter)
-console_handler.setLevel(logging.INFO) 
+console_handler.setLevel(logging.INFO)
 root_logger.addHandler(console_handler)
 
 logger = logging.getLogger(__name__)
@@ -50,22 +44,17 @@ class TokenCountingMiddleware(Middleware):
     
     def __init__(self, model: str = "cl100k_base"):
         """Initialize token counting middleware.
-        
+
         Args:
             model: Tiktoken model name (cl100k_base for GPT-4/Claude compatibility)
         """
+        if not TIKTOKEN_AVAILABLE:
+            raise ImportError("tiktoken is required for token counting. Install with: pip install tiktoken")
+
         self.encoder = tiktoken.get_encoding(model)
         self.model = model
         self.token_stats = defaultdict(lambda: {"input": 0, "output": 0, "calls": 0})
         self.logger = logging.getLogger("token_counter")
-        
-        # Create separate log file for token metrics
-        token_log_path = os.path.join(LOG_DIRECTORY, "token_metrics.log")
-        token_handler = logging.FileHandler(token_log_path, mode='a', encoding='utf-8')
-        token_formatter = logging.Formatter('%(asctime)s - %(message)s')
-        token_handler.setFormatter(token_formatter)
-        token_handler.setLevel(logging.INFO)
-        self.logger.addHandler(token_handler)
         self.logger.setLevel(logging.INFO)
     
     def count_tokens(self, text: str) -> int:
@@ -159,7 +148,7 @@ class TokenCountingMiddleware(Middleware):
             
             return result
             
-        except Exception as e:
+        except Exception:
             duration_ms = (time.perf_counter() - start_time) * 1000
             self.log_token_usage("tool_call_error", input_tokens, 0, 
                                tool_name, duration_ms)
@@ -189,7 +178,7 @@ class TokenCountingMiddleware(Middleware):
             
             return result
             
-        except Exception as e:
+        except Exception:
             duration_ms = (time.perf_counter() - start_time) * 1000
             self.log_token_usage("resource_read_error", 0, 0, 
                                resource_uri, duration_ms)
@@ -219,7 +208,7 @@ class TokenCountingMiddleware(Middleware):
             
             return result
             
-        except Exception as e:
+        except Exception:
             duration_ms = (time.perf_counter() - start_time) * 1000
             self.log_token_usage("prompt_get_error", 0, 0, 
                                prompt_name, duration_ms)
@@ -247,80 +236,69 @@ def create_app(auth=None):
     else:
         logger.info("MCP server created with standard capabilities...")
     
-    token_counter = TokenCountingMiddleware()
-    app.add_middleware(token_counter)
-    logger.info("Token counting middleware added to MCP server")
+    # Add token counting middleware only if tiktoken is available
+    if TIKTOKEN_AVAILABLE:
+        try:
+            token_counter = TokenCountingMiddleware()
+            app.add_middleware(token_counter)
+            logger.info("Token counting middleware added to MCP server")
+        except Exception as e:
+            logger.warning(f"Failed to add token counting middleware: {e}")
     
     return app
 
 # --- Module Imports ---
 from yargitay_mcp_module.client import YargitayOfficialApiClient
-from yargitay_mcp_module.models import (
-    YargitayDetailedSearchRequest, YargitayDocumentMarkdown, CompactYargitaySearchResult,
-    YargitayBirimEnum, CleanYargitayDecisionEntry
-)
 from bedesten_mcp_module.client import BedestenApiClient
 from bedesten_mcp_module.models import (
     BedestenSearchRequest, BedestenSearchData,
     BedestenDocumentMarkdown, BedestenCourtTypeEnum
 )
 from bedesten_mcp_module.enums import BirimAdiEnum
+
+# Semantic Search Module Imports (conditional based on OPENROUTER_API_KEY)
+from semantic_search.embedder import is_openrouter_available
+SEMANTIC_SEARCH_AVAILABLE = is_openrouter_available()
+
+if SEMANTIC_SEARCH_AVAILABLE:
+    from semantic_search.embedder import OpenRouterEmbedder
+    from semantic_search.vector_store import VectorStore
+    from semantic_search.processor import DocumentProcessor
+    logger.info("Semantic search enabled (OPENROUTER_API_KEY found)")
+else:
+    logger.info("Semantic search disabled (OPENROUTER_API_KEY not set)")
+
 from danistay_mcp_module.client import DanistayApiClient
-from danistay_mcp_module.models import (
-    DanistayKeywordSearchRequest, DanistayDetailedSearchRequest,
-    DanistayDocumentMarkdown, CompactDanistaySearchResult
-)
 from emsal_mcp_module.client import EmsalApiClient
 from emsal_mcp_module.models import (
-    EmsalSearchRequest, EmsalDocumentMarkdown, CompactEmsalSearchResult
+    EmsalSearchRequest, CompactEmsalSearchResult
 )
 from uyusmazlik_mcp_module.client import UyusmazlikApiClient
 from uyusmazlik_mcp_module.models import (
-    UyusmazlikSearchRequest, UyusmazlikSearchResponse, UyusmazlikDocumentMarkdown,
-    UyusmazlikBolumEnum, UyusmazlikTuruEnum, UyusmazlikKararSonucuEnum
+    UyusmazlikSearchRequest, UyusmazlikBolumEnum, UyusmazlikTuruEnum, UyusmazlikKararSonucuEnum
 )
 from anayasa_mcp_module.client import AnayasaMahkemesiApiClient
 from anayasa_mcp_module.bireysel_client import AnayasaBireyselBasvuruApiClient
 from anayasa_mcp_module.unified_client import AnayasaUnifiedClient
 from anayasa_mcp_module.models import (
-    AnayasaNormDenetimiSearchRequest,
-    AnayasaSearchResult,
-    AnayasaDocumentMarkdown,
-    AnayasaBireyselReportSearchRequest,
-    AnayasaBireyselReportSearchResult,
-    AnayasaBireyselBasvuruDocumentMarkdown,
     AnayasaUnifiedSearchRequest,
-    AnayasaUnifiedSearchResult,
-    AnayasaUnifiedDocumentMarkdown,
     # Removed enum imports - now using Literal strings in models
 )
-# KIK Module Imports
-from kik_mcp_module.client import KikApiClient
-from kik_mcp_module.models import ( 
-    KikKararTipi, 
-    KikSearchRequest,
-    KikSearchResult,
-    KikDocumentMarkdown 
-)
+# KIK v2 Module Imports (New API)
+from kik_mcp_module.client_v2 import KikV2ApiClient
+from kik_mcp_module.models_v2 import KikV2DecisionType
 
 from rekabet_mcp_module.client import RekabetKurumuApiClient
 from rekabet_mcp_module.models import (
     RekabetKurumuSearchRequest,
     RekabetSearchResult,
-    RekabetDocument,
     RekabetKararTuruGuidEnum
 )
 
 from sayistay_mcp_module.client import SayistayApiClient
 from sayistay_mcp_module.models import (
-    GenelKurulSearchRequest, GenelKurulSearchResponse,
-    TemyizKuruluSearchRequest, TemyizKuruluSearchResponse,
-    DaireSearchRequest, DaireSearchResponse,
-    SayistayDocumentMarkdown,
-    SayistayUnifiedSearchRequest, SayistayUnifiedSearchResult,
-    SayistayUnifiedDocumentMarkdown
+    SayistayUnifiedSearchRequest
 )
-from sayistay_mcp_module.enums import DaireEnum, KamuIdaresiTuruEnum, WebKararKonusuEnum
 from sayistay_mcp_module.unified_client import SayistayUnifiedClient
 
 # KVKK Module Imports
@@ -334,14 +312,11 @@ from kvkk_mcp_module.models import (
 # BDDK Module Imports
 from bddk_mcp_module.client import BddkApiClient
 from bddk_mcp_module.models import (
-    BddkSearchRequest,
-    BddkSearchResult,
-    BddkDocumentMarkdown
+    BddkSearchRequest
 )
 
 
 # Create a placeholder app that will be properly initialized after tools are defined
-from fastmcp import FastMCP
 
 # MCP app for Turkish legal databases with explicit capabilities
 app = FastMCP(
@@ -359,13 +334,16 @@ uyusmazlik_client_instance = UyusmazlikApiClient()
 anayasa_norm_client_instance = AnayasaMahkemesiApiClient()
 anayasa_bireysel_client_instance = AnayasaBireyselBasvuruApiClient()
 anayasa_unified_client_instance = AnayasaUnifiedClient()
-kik_client_instance = KikApiClient()
+kik_v2_client_instance = KikV2ApiClient()
 rekabet_client_instance = RekabetKurumuApiClient()
 bedesten_client_instance = BedestenApiClient()
 sayistay_client_instance = SayistayApiClient()
 sayistay_unified_client_instance = SayistayUnifiedClient()
 kvkk_client_instance = KvkkApiClient()
 bddk_client_instance = BddkApiClient()
+
+# Health check client (singleton for reuse)
+_health_check_client: Optional[httpx.AsyncClient] = None
 
 
 KARAR_TURU_ADI_TO_GUID_ENUM_MAP = {
@@ -381,7 +359,7 @@ KARAR_TURU_ADI_TO_GUID_ENUM_MAP = {
 # --- MCP Tools for Yargitay ---
 """
 @app.tool(
-    description="Search Yargıtay decisions with 52 chamber filtering and advanced operators",
+    description="Use this when searching Turkish Court of Cassation (Yargıtay) decisions. Supports 52 chamber filtering and advanced operators (+required, -excluded, \"exact phrase\").",
     annotations={
         "readOnlyHint": True,
         "openWorldHint": True,
@@ -455,7 +433,7 @@ async def search_yargitay_detailed(
         raise
 
 @app.tool(
-    description="Get Yargıtay decision text in Markdown format",
+    description="Use this when retrieving full text of a Yargıtay (Court of Cassation) decision. Returns clean Markdown format.",
     annotations={
         "readOnlyHint": True,
         "idempotentHint": True
@@ -475,7 +453,7 @@ async def get_yargitay_document_markdown(id: str) -> YargitayDocumentMarkdown:
 # --- MCP Tools for Danistay ---
 """
 @app.tool(
-    description="Search Danıştay decisions with keyword logic (AND/OR/NOT operators)",
+    description="Use this when searching Turkish Council of State (Danıştay) decisions using AND/OR/NOT keyword logic.",
     annotations={
         "readOnlyHint": True,
         "openWorldHint": True,
@@ -519,7 +497,7 @@ async def search_danistay_by_keyword(
         raise
 
 @app.tool(
-    description="Search Danıştay decisions with detailed criteria (chamber selection, case numbers)",
+    description="Use this when searching Danıştay decisions with specific chamber, case numbers, and date filters.",
     annotations={
         "readOnlyHint": True,
         "openWorldHint": True,
@@ -581,7 +559,7 @@ async def search_danistay_detailed(
         raise
 
 @app.tool(
-    description="Get Danıştay decision text in Markdown format",
+    description="Use this when retrieving full text of a Danıştay (Council of State) decision. Returns clean Markdown format.",
     annotations={
         "readOnlyHint": True,
         "idempotentHint": True
@@ -600,7 +578,7 @@ async def get_danistay_document_markdown(id: str) -> DanistayDocumentMarkdown:
 
 # --- MCP Tools for Emsal ---
 @app.tool(
-    description="Search Emsal precedent decisions with detailed criteria",
+    description="Use this when searching UYAP precedent decisions (Emsal). For lower court decisions and case law.",
     annotations={
         "readOnlyHint": True,
         "openWorldHint": True,
@@ -624,7 +602,7 @@ async def search_emsal_detailed_decisions(
     sort_direction: str = Field("desc", description="Sorting direction ('asc' or 'desc')."),
     page_number: int = Field(1, ge=1, description="Page number (accepts int)."),
     # page_size: int = Field(10, ge=1, le=10, description="Results per page.")
-) -> CompactEmsalSearchResult:
+) -> Dict[str, Any]:
     """Search Emsal precedent decisions with detailed criteria."""
     
     page_size = 10  # Default value
@@ -648,7 +626,7 @@ async def search_emsal_detailed_decisions(
         page_size=page_size
     )
     
-    logger.info(f"Tool 'search_emsal_detailed_decisions' called.")
+    logger.info("Tool 'search_emsal_detailed_decisions' called.")
     try:
         api_response = await emsal_client_instance.search_detailed_decisions(search_query)
         if api_response.data:
@@ -657,33 +635,34 @@ async def search_emsal_detailed_decisions(
                 total_records=api_response.data.recordsTotal if api_response.data.recordsTotal is not None else 0,
                 requested_page=search_query.page_number,
                 page_size=search_query.page_size
-            )
+            ).model_dump()
         logger.warning("API response for Emsal search did not contain expected data structure.")
-        return CompactEmsalSearchResult(decisions=[], total_records=0, requested_page=search_query.page_number, page_size=search_query.page_size)
-    except Exception as e:
-        logger.exception(f"Error in tool 'search_emsal_detailed_decisions'.")
+        return CompactEmsalSearchResult(decisions=[], total_records=0, requested_page=search_query.page_number, page_size=search_query.page_size).model_dump()
+    except Exception:
+        logger.exception("Error in tool 'search_emsal_detailed_decisions'.")
         raise
 
 @app.tool(
-    description="Get Emsal precedent decision text in Markdown format",
+    description="Use this when retrieving full text of an Emsal precedent decision. Returns clean Markdown format.",
     annotations={
         "readOnlyHint": True,
         "idempotentHint": True
     }
 )
-async def get_emsal_document_markdown(id: str) -> EmsalDocumentMarkdown:
+async def get_emsal_document_markdown(id: str) -> Dict[str, Any]:
     """Get document as Markdown."""
     logger.info(f"Tool 'get_emsal_document_markdown' called for ID: {id}")
     if not id or not id.strip(): raise ValueError("Document ID required for Emsal.")
     try:
-        return await emsal_client_instance.get_decision_document_as_markdown(id)
-    except Exception as e:
-        logger.exception(f"Error in tool 'get_emsal_document_markdown'.")
+        result = await emsal_client_instance.get_decision_document_as_markdown(id)
+        return result.model_dump()
+    except Exception:
+        logger.exception("Error in tool 'get_emsal_document_markdown'.")
         raise
 
 # --- MCP Tools for Uyusmazlik ---
 @app.tool(
-    description="Search Uyuşmazlık Mahkemesi decisions for jurisdictional disputes",
+    description="Use this when searching jurisdictional dispute court (Uyuşmazlık Mahkemesi) decisions. Resolves conflicts between civil and administrative courts.",
     annotations={
         "readOnlyHint": True,
         "openWorldHint": True,
@@ -709,7 +688,7 @@ async def search_uyusmazlik_decisions(
     hepsi: str = Field("", description="Search for texts containing all specified words."),
     herhangi_birisi: str = Field("", description="Search for texts containing any of the specified words."),
     not_hepsi: str = Field("", description="Exclude texts containing these specified words.")
-) -> UyusmazlikSearchResponse:
+) -> Dict[str, Any]:
     """Search Court of Jurisdictional Disputes decisions."""
     
     # Convert string literals to enums
@@ -746,15 +725,16 @@ async def search_uyusmazlik_decisions(
         not_hepsi=not_hepsi
     )
     
-    logger.info(f"Tool 'search_uyusmazlik_decisions' called.")
+    logger.info("Tool 'search_uyusmazlik_decisions' called.")
     try:
-        return await uyusmazlik_client_instance.search_decisions(search_params)
-    except Exception as e:
-        logger.exception(f"Error in tool 'search_uyusmazlik_decisions'.")
+        result = await uyusmazlik_client_instance.search_decisions(search_params)
+        return result.model_dump()
+    except Exception:
+        logger.exception("Error in tool 'search_uyusmazlik_decisions'.")
         raise
 
 @app.tool(
-    description="Get Uyuşmazlık Mahkemesi decision text from URL in Markdown format",
+    description="Use this when retrieving full text of an Uyuşmazlık Mahkemesi decision. Returns clean Markdown format.",
     annotations={
         "readOnlyHint": True,
         "idempotentHint": True
@@ -762,15 +742,16 @@ async def search_uyusmazlik_decisions(
 )
 async def get_uyusmazlik_document_markdown_from_url(
     document_url: str = Field(..., description="Full URL to the Uyuşmazlık Mahkemesi decision document from search results")
-) -> UyusmazlikDocumentMarkdown:
+) -> Dict[str, Any]:
     """Get Uyuşmazlık Mahkemesi decision as Markdown."""
     logger.info(f"Tool 'get_uyusmazlik_document_markdown_from_url' called for URL: {str(document_url)}")
     if not document_url:
         raise ValueError("Document URL (document_url) is required for Uyuşmazlık document retrieval.")
     try:
-        return await uyusmazlik_client_instance.get_decision_document_as_markdown(str(document_url))
-    except Exception as e:
-        logger.exception(f"Error in tool 'get_uyusmazlik_document_markdown_from_url'.")
+        result = await uyusmazlik_client_instance.get_decision_document_as_markdown(str(document_url))
+        return result.model_dump()
+    except Exception:
+        logger.exception("Error in tool 'get_uyusmazlik_document_markdown_from_url'.")
         raise
 
 # --- DEACTIVATED: MCP Tools for Anayasa Mahkemesi (Individual Tools) ---
@@ -778,7 +759,7 @@ async def get_uyusmazlik_document_markdown_from_url(
 
 """
 @app.tool(
-    description="Search Constitutional Court norm control decisions with comprehensive filtering",
+    description="Use this when searching Turkish Constitutional Court norm control decisions. For constitutional review and legislation challenges.",
     annotations={
         "readOnlyHint": True,
         "openWorldHint": True,
@@ -811,7 +792,7 @@ async def get_uyusmazlik_document_markdown_from_url(
 
 # --- Unified MCP Tools for Anayasa Mahkemesi ---
 @app.tool(
-    description="Unified search for Constitutional Court decisions: both norm control (normkararlarbilgibankasi) and individual applications (kararlarbilgibankasi) in one tool",
+    description="Use this when searching Turkish Constitutional Court decisions. Supports both norm control (legislation review) and individual applications (rights violations).",
     annotations={
         "readOnlyHint": True,
         "openWorldHint": True,
@@ -861,12 +842,12 @@ async def search_anayasa_unified(
         result = await anayasa_unified_client_instance.search_unified(request)
         return json.dumps(result.model_dump(), ensure_ascii=False, indent=2)
         
-    except Exception as e:
-        logger.exception(f"Error in tool 'search_anayasa_unified'.")
+    except Exception:
+        logger.exception("Error in tool 'search_anayasa_unified'.")
         raise
 
 @app.tool(
-    description="Unified document retrieval for Constitutional Court decisions: auto-detects norm control vs individual applications based on URL",
+    description="Use this when retrieving full text of a Constitutional Court decision. Auto-detects decision type from URL.",
     annotations={
         "readOnlyHint": True,
         "openWorldHint": False,
@@ -883,107 +864,131 @@ async def get_anayasa_document_unified(
         result = await anayasa_unified_client_instance.get_document_unified(document_url, page_number)
         return json.dumps(result.model_dump(mode='json'), ensure_ascii=False, indent=2)
         
-    except Exception as e:
-        logger.exception(f"Error in tool 'get_anayasa_document_unified'.")
+    except Exception:
+        logger.exception("Error in tool 'get_anayasa_document_unified'.")
         raise
 
-# --- MCP Tools for KIK (Kamu İhale Kurulu) ---
+# --- MCP Tools for KIK v2 (Kamu İhale Kurulu - New API) ---
 @app.tool(
-    description="Search Public Procurement Authority (KİK) decisions for procurement law disputes",
+    description="Use this when searching Turkish public procurement disputes (KİK). Supports dispute, regulatory, and court decision types.",
     annotations={
         "readOnlyHint": True,
         "openWorldHint": True,
         "idempotentHint": True
     }
 )
-async def search_kik_decisions(
-    karar_tipi: Literal["rbUyusmazlik", "rbDuzenleyici", "rbMahkeme"] = Field("rbUyusmazlik", description="Type of KIK Decision."),
-    karar_no: str = Field("", description="Decision Number (e.g., '2024/UH.II-1766')."),
-    karar_tarihi_baslangic: str = Field("", description="Decision Date Start (DD.MM.YYYY)."),
-    karar_tarihi_bitis: str = Field("", description="Decision Date End (DD.MM.YYYY)."),
-    basvuru_sahibi: str = Field("", description="Applicant."),
-    ihaleyi_yapan_idare: str = Field("", description="Procuring Entity."),
-    basvuru_konusu_ihale: str = Field("", description="Tender subject of the application."),
-    karar_metni: str = Field("", description="Decision text search. Supports: +word, -word, \"exact phrase\", OR/AND"),
-    yil: str = Field("", description="Year of the decision."),
-    resmi_gazete_tarihi: str = Field("", description="Official Gazette Date (DD.MM.YYYY)."),
-    resmi_gazete_sayisi: str = Field("", description="Official Gazette Number."),
-    page: int = Field(1, ge=1, description="Results page number.")
-) -> KikSearchResult:
-    """Search Public Procurement Authority (KIK) decisions."""
+async def search_kik_v2_decisions(
+    decision_type: str = Field("uyusmazlik", description="Decision type: 'uyusmazlik' (disputes), 'duzenleyici' (regulatory), or 'mahkeme' (court decisions)"),
+    karar_metni: str = Field("", description="Decision text search query"),
+    karar_no: str = Field("", description="Decision number (e.g., '2025/UH.II-1801')"),
+    basvuran: str = Field("", description="Applicant name"),
+    idare_adi: str = Field("", description="Administration/procuring entity name"),
+    baslangic_tarihi: str = Field("", description="Start date (YYYY-MM-DD format, e.g., '2025-01-01')"),
+    bitis_tarihi: str = Field("", description="End date (YYYY-MM-DD format, e.g., '2025-12-31')")
+) -> dict:
+    """Search Public Procurement Authority (KİK) decisions using the new v2 API.
     
-    # Convert string literal to enum
-    karar_tipi_enum = KikKararTipi(karar_tipi)
+    This tool supports all three KİK decision types:
+    - uyusmazlik: Disputes and conflicts in public procurement
+    - duzenleyici: Regulatory decisions and guidelines  
+    - mahkeme: Court decisions and legal interpretations
     
-    search_query = KikSearchRequest(
-        karar_tipi=karar_tipi_enum,
-        karar_no=karar_no,
-        karar_tarihi_baslangic=karar_tarihi_baslangic,
-        karar_tarihi_bitis=karar_tarihi_bitis,
-        basvuru_sahibi=basvuru_sahibi,
-        ihaleyi_yapan_idare=ihaleyi_yapan_idare,
-        basvuru_konusu_ihale=basvuru_konusu_ihale,
-        karar_metni=karar_metni,
-        yil=yil,
-        resmi_gazete_tarihi=resmi_gazete_tarihi,
-        resmi_gazete_sayisi=resmi_gazete_sayisi,
-        page=page
-    )
+    Each decision type uses its respective endpoint (GetKurulKararlari, GetKurulKararlariDk, GetKurulKararlariMk)
+    and returns results with the decision_type field populated for identification.
+    """
     
-    logger.info(f"Tool 'search_kik_decisions' called.")
+    logger.info(f"Tool 'search_kik_v2_decisions' called with decision_type='{decision_type}', karar_metni='{karar_metni}', karar_no='{karar_no}'")
+    
     try:
-        api_response = await kik_client_instance.search_decisions(search_query)
-        page_param_for_log = search_query.page if hasattr(search_query, 'page') else 1
-        if not api_response.decisions and api_response.total_records == 0 and page_param_for_log == 1:
-             logger.warning(f"KIK search returned no decisions for query.")
-        return api_response
+        # Validate and convert decision type
+        try:
+            kik_decision_type = KikV2DecisionType(decision_type)
+        except ValueError:
+            return {
+                "decisions": [],
+                "total_records": 0,
+                "page": 1,
+                "error_code": "INVALID_DECISION_TYPE",
+                "error_message": f"Invalid decision type: {decision_type}. Valid options: uyusmazlik, duzenleyici, mahkeme"
+            }
+        
+        api_response = await kik_v2_client_instance.search_decisions(
+            decision_type=kik_decision_type,
+            karar_metni=karar_metni,
+            karar_no=karar_no,
+            basvuran=basvuran,
+            idare_adi=idare_adi,
+            baslangic_tarihi=baslangic_tarihi,
+            bitis_tarihi=bitis_tarihi
+        )
+        
+        # Convert to dictionary for MCP tool response
+        result = {
+            "decisions": [decision.model_dump() for decision in api_response.decisions],
+            "total_records": api_response.total_records,
+            "page": api_response.page,
+            "error_code": api_response.error_code,
+            "error_message": api_response.error_message
+        }
+        
+        logger.info(f"KİK v2 {decision_type} search completed. Found {len(api_response.decisions)} decisions")
+        return result
+        
     except Exception as e:
-        logger.exception(f"Error in KIK search tool 'search_kik_decisions'.")
-        current_page_val = search_query.page if hasattr(search_query, 'page') else 1
-        return KikSearchResult(decisions=[], total_records=0, current_page=current_page_val)
+        logger.exception(f"Error in KİK v2 {decision_type} search tool 'search_kik_v2_decisions'.")
+        return {
+            "decisions": [],
+            "total_records": 0,
+            "page": 1,
+            "error_code": "TOOL_ERROR",
+            "error_message": str(e)
+        }
 
 @app.tool(
-    description="Get Public Procurement Authority (KİK) decision text in paginated Markdown format",
+    description="Use this when retrieving full text of a KİK procurement decision. Returns document in Markdown format.",
     annotations={
         "readOnlyHint": True,
         "idempotentHint": True
     }
 )
-async def get_kik_document_markdown(
-    karar_id: str = Field(..., description="The Base64 encoded KIK decision identifier."),
-    page_number: int = Field(1, ge=1, description="Page number for paginated Markdown content (1-indexed). Default is 1.")
-) -> KikDocumentMarkdown:
-    """Get KIK decision as paginated Markdown."""
-    logger.info(f"Tool 'get_kik_document_markdown' called for KIK karar_id: {karar_id}, Markdown Page: {page_number}")
-    
-    if not karar_id or not karar_id.strip():
-        logger.error("KIK Document retrieval: karar_id cannot be empty.")
-        return KikDocumentMarkdown( 
-            retrieved_with_karar_id=karar_id,
-            error_message="karar_id is required and must be a non-empty string.",
-            current_page=page_number or 1,
-            total_pages=1,
-            is_paginated=False
-            )
+async def get_kik_v2_document_markdown(
+    gundemMaddesiId: str = Field(..., description="gundemMaddesiId from search_kik_v2_decisions results")
+) -> dict:
+    """Get KİK decision document in Markdown format."""
 
-    current_page_to_fetch = page_number if page_number is not None and page_number >= 1 else 1
+    logger.info(f"Tool 'get_kik_v2_document_markdown' called for gundemMaddesiId: {gundemMaddesiId}")
+
+    if not gundemMaddesiId or not gundemMaddesiId.strip():
+        return {
+            "document_id": gundemMaddesiId,
+            "kararNo": "",
+            "markdown_content": "",
+            "source_url": "",
+            "error_message": "gundemMaddesiId is required and must be a non-empty string"
+        }
 
     try:
-        return await kik_client_instance.get_decision_document_as_markdown(
-            karar_id_b64=karar_id, 
-            page_number=current_page_to_fetch
-        )
+        api_response = await kik_v2_client_instance.get_document_markdown(gundemMaddesiId)
+
+        return {
+            "document_id": api_response.document_id,
+            "kararNo": api_response.kararNo,
+            "markdown_content": api_response.markdown_content,
+            "source_url": api_response.source_url,
+            "error_message": api_response.error_message
+        }
+
     except Exception as e:
-        logger.exception(f"Error in KIK document retrieval tool 'get_kik_document_markdown' for karar_id: {karar_id}")
-        return KikDocumentMarkdown(
-            retrieved_with_karar_id=karar_id,
-            error_message=f"Tool-level error during KIK document retrieval: {str(e)}",
-            current_page=current_page_to_fetch, 
-            total_pages=1, 
-            is_paginated=False
-        )
+        logger.exception(f"Error in KİK v2 document retrieval tool for gundemMaddesiId: {gundemMaddesiId}")
+        return {
+            "document_id": gundemMaddesiId,
+            "kararNo": "",
+            "markdown_content": "",
+            "source_url": "",
+            "error_message": f"Tool-level error during document retrieval: {str(e)}"
+        }
 @app.tool(
-    description="Search Competition Authority (Rekabet Kurumu) decisions for competition law and antitrust",
+    description="Use this when searching Turkish competition law and antitrust decisions (Rekabet Kurumu).",
     annotations={
         "readOnlyHint": True,
         "openWorldHint": True,
@@ -1008,7 +1013,7 @@ async def search_rekabet_kurumu_decisions(
     KararSayisi: str = Field("", description="Decision number (Karar Sayısı)."),
     KararTarihi: str = Field("", description="Decision date (Karar Tarihi), e.g., DD.MM.YYYY."),
     page: int = Field(1, ge=1, description="Page number to fetch for the results list.")
-) -> RekabetSearchResult:
+) -> Dict[str, Any]:
     """Search Competition Authority decisions."""
     
     karar_turu_guid_enum = KARAR_TURU_ADI_TO_GUID_ENUM_MAP.get(KararTuru)
@@ -1033,13 +1038,14 @@ async def search_rekabet_kurumu_decisions(
     logger.info(f"Tool 'search_rekabet_kurumu_decisions' called. Query: {search_query.model_dump_json(exclude_none=True, indent=2)}")
     try:
        
-        return await rekabet_client_instance.search_decisions(search_query)
-    except Exception as e:
+        result = await rekabet_client_instance.search_decisions(search_query)
+        return result.model_dump()
+    except Exception:
         logger.exception("Error in tool 'search_rekabet_kurumu_decisions'.")
-        return RekabetSearchResult(decisions=[], retrieved_page_number=page, total_records_found=0, total_pages=0)
+        return RekabetSearchResult(decisions=[], retrieved_page_number=page, total_records_found=0, total_pages=0).model_dump()
 
 @app.tool(
-    description="Get Competition Authority decision text in paginated Markdown format",
+    description="Use this when retrieving full text of a Competition Authority decision. Returns paginated Markdown format.",
     annotations={
         "readOnlyHint": True,
         "idempotentHint": True
@@ -1048,22 +1054,22 @@ async def search_rekabet_kurumu_decisions(
 async def get_rekabet_kurumu_document(
     karar_id: str = Field(..., description="GUID (kararId) of the Rekabet Kurumu decision. This ID is obtained from search results."),
     page_number: int = Field(1, ge=1, description="Requested page number for the Markdown content converted from PDF (1-indexed, accepts int). Default is 1.")
-) -> RekabetDocument:
+) -> Dict[str, Any]:
     """Get Competition Authority decision as paginated Markdown."""
     logger.info(f"Tool 'get_rekabet_kurumu_document' called. Karar ID: {karar_id}, Markdown Page: {page_number}")
     
     current_page_to_fetch = page_number if page_number >= 1 else 1
     
     try:
-      
-        return await rekabet_client_instance.get_decision_document(karar_id, page_number=current_page_to_fetch)
-    except Exception as e:
+        result = await rekabet_client_instance.get_decision_document(karar_id, page_number=current_page_to_fetch)
+        return result.model_dump()
+    except Exception:
         logger.exception(f"Error in tool 'get_rekabet_kurumu_document'. Karar ID: {karar_id}")
         raise 
 
 # --- MCP Tools for Bedesten (Unified Search Across All Courts) ---
 @app.tool(
-    description="Search multiple Turkish courts (Yargıtay, Danıştay, Local Courts, Appeals Courts, KYB)",
+    description="Use this when searching across multiple Turkish courts in a single query. Supports Yargıtay, Danıştay, Local Courts, Appeals Courts, and KYB.",
     annotations={
         "readOnlyHint": True,
         "openWorldHint": True,
@@ -1118,6 +1124,18 @@ For best results, use exact phrases with quotes for legal terms."""),
     
     pageSize = 10  # Default value
     
+    # Convert date formats if provided
+    # Accept formats: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS.000Z
+    if kararTarihiStart and not kararTarihiStart.endswith('Z'):
+        # Convert simple date format to ISO 8601 with timezone
+        if 'T' not in kararTarihiStart:
+            kararTarihiStart = f"{kararTarihiStart}T00:00:00.000Z"
+    
+    if kararTarihiEnd and not kararTarihiEnd.endswith('Z'):
+        # Convert simple date format to ISO 8601 with timezone
+        if 'T' not in kararTarihiEnd:
+            kararTarihiEnd = f"{kararTarihiEnd}T23:59:59.999Z"
+    
     search_data = BedestenSearchData(
         pageSize=pageSize,
         pageNumber=pageNumber,
@@ -1156,12 +1174,12 @@ For best results, use exact phrases with quotes for legal terms."""),
             "page_size": pageSize,
             "searched_courts": court_types
         }
-    except Exception as e:
+    except Exception:
         logger.exception("Error in tool 'search_bedesten_unified'")
         raise
 
 @app.tool(
-    description="Get legal decision document from Bedesten API in Markdown format",
+    description="Use this when retrieving full text of any Bedesten-supported court decision. Returns clean Markdown format.",
     annotations={
         "readOnlyHint": True,
         "idempotentHint": True
@@ -1178,9 +1196,257 @@ async def get_bedesten_document_markdown(
     
     try:
         return await bedesten_client_instance.get_document_as_markdown(documentId)
-    except Exception as e:
+    except Exception:
         logger.exception("Error in tool 'get_kyb_bedesten_document_markdown'")
         raise
+
+
+# --- Semantic Search Tool (Conditional - requires OPENROUTER_API_KEY) ---
+if SEMANTIC_SEARCH_AVAILABLE:
+    @app.tool(
+        description="Use this when you need intelligent semantic search on Turkish legal decisions. Uses AI embeddings for relevance re-ranking.",
+        annotations={
+            "readOnlyHint": True,
+            "openWorldHint": True,
+            "idempotentHint": True
+        }
+    )
+    async def search_bedesten_semantic(
+        initial_keyword: str = Field(..., description="""Bedesten API'den ilk sonuçları çekmek için anahtar kelime veya arama ifadesi.
+Bu terim ile API'den 100 karar çekilir, sonra semantik sıralama yapılır.
+
+ARAMA OPERATÖRLERİ:
+• Basit arama: "muvazaa" (kelimeyi içeren kararlar)
+• Tam eşleşme: "\"muris muvazaası\"" (tırnak içi aynen aranır)
+• AND: "muvazaa AND tapu" (her iki terim zorunlu)
+• OR: "ecrimisil OR kira" (en az biri yeterli)
+• NOT: "muvazaa NOT miras" (muvazaa içeren ama miras içermeyen)
+• Zorunlu: "+muvazaa tapu" (muvazaa zorunlu, tapu opsiyonel)
+• Hariç: "muvazaa -miras" (muvazaa içeren, miras hariç)
+
+ÖRNEKLER:
+• "muvazaa" - geniş arama
+• "\"muris muvazaası\"" - tam ifade
+• "muvazaa AND tapu AND iptal" - tüm terimler zorunlu
+• "ecrimisil OR haksız işgal" - alternatifli arama"""),
+        query: str = Field(..., description="""Semantik benzerlik için DETAYLI arama sorgusu.
+initial_keyword ile bulunan kararlar bu sorguya göre anlamsal olarak sıralanır.
+
+ÖNEMLİ: Embedding modeli anlamlı cümleler bekler, anahtar kelimeler DEĞİL.
+Aradığınız hukuki meseleyi CÜMLE olarak yazın.
+
+DOĞRU KULLANIM:
+• "Mirasçının muvazaalı satış işlemine karşı tapu iptali ve tescil davası açması"
+• "Taşınmazın fiili kullanımı ve zilyetlik durumunun değerlendirilmesi"
+• "İş sözleşmesinin feshinde kıdem tazminatı hesaplama yöntemi"
+
+YANLIŞ KULLANIM:
+• "muvazaa tapu iptal" (sadece kelimeler, cümle değil)
+• "kıdem tazminat hesap" (bağlamsız kelimeler)
+
+İPUCU: Ne arıyorsanız onu bir cümle olarak ifade edin."""),
+        court_types: List[BedestenCourtTypeEnum] = Field(
+            default=["YARGITAYKARARI", "DANISTAYKARAR", "YERELHUKUK", "ISTINAFHUKUK", "KYB"],
+            description="Court types to search: YARGITAYKARARI, DANISTAYKARAR, YERELHUKUK, ISTINAFHUKUK, KYB (default: all)"
+        ),
+        top_k: int = Field(10, ge=1, le=50, description="Number of top results to return (1-50)")
+    ) -> Dict[str, Any]:
+        """
+        Perform semantic search on Turkish legal decisions using OpenRouter API.
+
+        This tool:
+        1. Searches Bedesten API with initial keyword (retrieves 100 results)
+        2. Fetches full document content for each result
+        3. Generates embeddings using Google's Gemini Embedding model via OpenRouter
+        4. Performs semantic similarity search with the query
+        5. Returns re-ranked results based on semantic relevance
+
+        Benefits over keyword search:
+        - Better understanding of context and meaning
+        - Finds semantically similar documents even with different wording
+        - More accurate ranking based on relevance
+        - Supports multilingual queries (100+ languages)
+
+        Note: Requires OPENROUTER_API_KEY environment variable to be set.
+        """
+        logger.info(f"Semantic search tool called with initial_keyword: {initial_keyword}, query: {query}")
+
+        try:
+            # Initialize components
+            embedder = OpenRouterEmbedder()
+            vector_store = VectorStore(dimension=3072)  # Gemini embedding dimension
+            processor = DocumentProcessor(chunk_size=1500, chunk_overlap=300)
+
+            # Step 1: Initial keyword search to get document IDs
+            logger.info(f"Step 1: Searching Bedesten API with keyword: {initial_keyword}")
+
+            all_decisions = []
+
+            # Search each court type
+            for court_type in court_types:
+                try:
+                    per_court_limit = max(20, 100 // len(court_types))
+
+                    search_results = await bedesten_client_instance.search_documents(
+                        BedestenSearchRequest(
+                            data=BedestenSearchData(
+                                phrase=initial_keyword,
+                                itemTypeList=[court_type],
+                                pageSize=per_court_limit,
+                                pageNumber=1
+                            )
+                        )
+                    )
+
+                    if search_results.data and search_results.data.emsalKararList:
+                        all_decisions.extend(search_results.data.emsalKararList)
+                        logger.info(f"Found {len(search_results.data.emsalKararList)} results from {court_type}")
+
+                except Exception as e:
+                    logger.warning(f"Error searching {court_type}: {e}")
+
+            if not all_decisions:
+                logger.warning("No documents found from initial search")
+                return {
+                    "status": "no_results",
+                    "message": "No documents found matching the initial keyword",
+                    "results": []
+                }
+
+            logger.info(f"Total documents found: {len(all_decisions)}")
+
+            # Step 2: Fetch document content and process
+            logger.info("Step 2: Fetching and processing document content...")
+
+            documents_data = []
+            failed_fetches = 0
+            decisions_to_process = all_decisions[:100]
+
+            for i, decision in enumerate(decisions_to_process):
+                try:
+                    doc = await bedesten_client_instance.get_document_as_markdown(decision.documentId)
+
+                    if doc.markdown_content:
+                        metadata = {
+                            "document_id": decision.documentId,
+                            "birim_adi": decision.birimAdi,
+                            "esas_no": decision.esasNo,
+                            "karar_no": decision.kararNo,
+                            "karar_tarihi": decision.kararTarihiStr,
+                            "court_type": decision.itemType.name if decision.itemType else None
+                        }
+
+                        chunks = processor.process_document(
+                            document_id=decision.documentId,
+                            text=doc.markdown_content,
+                            metadata=metadata
+                        )
+
+                        if chunks:
+                            full_text = " ".join([chunk.text for chunk in chunks])
+                            documents_data.append({
+                                "id": decision.documentId,
+                                "text": full_text[:3000],
+                                "metadata": metadata
+                            })
+
+                    if (i + 1) % 10 == 0:
+                        logger.info(f"Processed {i + 1}/{len(decisions_to_process)} documents")
+
+                except Exception as e:
+                    logger.warning(f"Failed to fetch document {decision.documentId}: {e}")
+                    failed_fetches += 1
+
+            if not documents_data:
+                logger.warning("No documents could be processed")
+                return {
+                    "status": "processing_error",
+                    "message": "Could not process any documents",
+                    "results": []
+                }
+
+            logger.info(f"Successfully processed {len(documents_data)} documents, {failed_fetches} failed")
+
+            # Step 3: Generate embeddings
+            logger.info("Step 3: Generating embeddings...")
+
+            query_embedding = embedder.encode_query(query, task="search result")
+
+            doc_texts = [doc["text"] for doc in documents_data]
+            doc_titles = [doc["metadata"].get("birim_adi", "none") for doc in documents_data]
+            doc_embeddings = embedder.encode_documents(doc_texts, titles=doc_titles)
+
+            # No dimension reduction - using full 3072 dimensions
+
+            # Step 4: Add to vector store and search
+            logger.info("Step 4: Performing semantic search...")
+
+            doc_ids = [doc["id"] for doc in documents_data]
+            doc_metadatas = [doc["metadata"] for doc in documents_data]
+
+            vector_store.add_documents(
+                ids=doc_ids,
+                texts=doc_texts,
+                embeddings=doc_embeddings,
+                metadata=doc_metadatas
+            )
+
+            search_results = vector_store.search(
+                query_embedding=query_embedding,
+                top_k=top_k,
+                threshold=0.3
+            )
+
+            # Step 5: Format results
+            logger.info(f"Step 5: Formatting {len(search_results)} results")
+
+            formatted_results = []
+            for doc, score in search_results:
+                title_parts = []
+                if doc.metadata.get("birim_adi"):
+                    title_parts.append(doc.metadata["birim_adi"])
+                if doc.metadata.get("esas_no"):
+                    title_parts.append(f"Esas: {doc.metadata['esas_no']}")
+                if doc.metadata.get("karar_no"):
+                    title_parts.append(f"Karar: {doc.metadata['karar_no']}")
+                if doc.metadata.get("karar_tarihi"):
+                    title_parts.append(f"Tarih: {doc.metadata['karar_tarihi']}")
+
+                title = " - ".join(title_parts) if title_parts else f"Document {doc.id}"
+
+                formatted_results.append({
+                    "document_id": doc.id,
+                    "title": title,
+                    "similarity_score": float(score),
+                    "preview": doc.text[:500] + "..." if len(doc.text) > 500 else doc.text,
+                    "metadata": doc.metadata,
+                    "source_url": f"https://mevzuat.adalet.gov.tr/ictihat/{doc.id}"
+                })
+
+            stats = vector_store.get_stats()
+
+            return {
+                "status": "success",
+                "query": query,
+                "initial_keyword": initial_keyword,
+                "total_documents_processed": len(documents_data),
+                "embedding_dimension": 3072,
+                "results": formatted_results,
+                "stats": {
+                    "documents_in_store": stats["num_documents"],
+                    "memory_usage_mb": round(stats["memory_usage_mb"], 2),
+                    "failed_fetches": failed_fetches
+                }
+            }
+
+        except Exception as e:
+            logger.exception(f"Error in semantic search: {e}")
+            return {
+                "status": "error",
+                "message": str(e),
+                "results": []
+            }
+
 
 # --- MCP Tools for Sayıştay (Turkish Court of Accounts) ---
 
@@ -1303,7 +1569,7 @@ async def get_bedesten_document_markdown(
 # --- UNIFIED MCP Tools for Sayıştay (Turkish Court of Accounts) ---
 
 @app.tool(
-    description="Search Sayıştay decisions unified across all three decision types (Genel Kurul, Temyiz Kurulu, Daire) with comprehensive filtering",
+    description="Use this when searching Turkish Court of Accounts (Sayıştay) audit decisions. Supports Genel Kurul, Temyiz Kurulu, and Daire decisions.",
     annotations={
         "readOnlyHint": True,
         "openWorldHint": True,
@@ -1340,10 +1606,10 @@ async def search_sayistay_unified(
     yargilama_dairesi: Literal["ALL", "1", "2", "3", "4", "5", "6", "7", "8"] = Field("ALL", description="Chamber selection (daire only)"),
     hesap_yili: str = Field("", description="Account year (daire only)"),
     web_karar_metni: str = Field("", description="Decision text search (daire only)")
-) -> SayistayUnifiedSearchResult:
+) -> Dict[str, Any]:
     """Search Sayıştay decisions across all three decision types with unified interface."""
     logger.info(f"Tool 'search_sayistay_unified' called with decision_type={decision_type}")
-    
+
     try:
         search_request = SayistayUnifiedSearchRequest(
             decision_type=decision_type,
@@ -1366,13 +1632,14 @@ async def search_sayistay_unified(
             hesap_yili=hesap_yili,
             web_karar_metni=web_karar_metni
         )
-        return await sayistay_unified_client_instance.search_unified(search_request)
-    except Exception as e:
+        result = await sayistay_unified_client_instance.search_unified(search_request)
+        return result.model_dump()
+    except Exception:
         logger.exception("Error in tool 'search_sayistay_unified'")
         raise
 
 @app.tool(
-    description="Get Sayıştay decision document in Markdown format for any decision type",
+    description="Use this when retrieving full text of a Sayıştay audit decision. Returns clean Markdown format.",
     annotations={
         "readOnlyHint": True,
         "openWorldHint": False,
@@ -1382,16 +1649,17 @@ async def search_sayistay_unified(
 async def get_sayistay_document_unified(
     decision_id: str = Field(..., description="Decision ID from search_sayistay_unified results"),
     decision_type: Literal["genel_kurul", "temyiz_kurulu", "daire"] = Field(..., description="Decision type: genel_kurul, temyiz_kurulu, or daire")
-) -> SayistayUnifiedDocumentMarkdown:
+) -> Dict[str, Any]:
     """Get Sayıştay decision document as Markdown for any decision type."""
     logger.info(f"Tool 'get_sayistay_document_unified' called for ID: {decision_id}, type: {decision_type}")
-    
+
     if not decision_id or not decision_id.strip():
         raise ValueError("Decision ID must be a non-empty string.")
-    
+
     try:
-        return await sayistay_unified_client_instance.get_document_unified(decision_id, decision_type)
-    except Exception as e:
+        result = await sayistay_unified_client_instance.get_document_unified(decision_id, decision_type)
+        return result.model_dump()
+    except Exception:
         logger.exception("Error in tool 'get_sayistay_document_unified'")
         raise
 
@@ -1414,7 +1682,7 @@ def perform_cleanup():
         globals().get('anayasa_norm_client_instance'),
         globals().get('anayasa_bireysel_client_instance'),
         globals().get('anayasa_unified_client_instance'),
-        globals().get('kik_client_instance'),
+        globals().get('kik_v2_client_instance'),
         globals().get('rekabet_client_instance'),
         globals().get('bedesten_client_instance'),
         globals().get('sayistay_client_instance'),
@@ -1428,6 +1696,11 @@ def perform_cleanup():
             if client_instance and hasattr(client_instance, 'close_client_session') and callable(client_instance.close_client_session):
                 logger.info(f"Scheduling close for client session: {client_instance.__class__.__name__}")
                 tasks.append(client_instance.close_client_session())
+        # Close health check client if it was created
+        global _health_check_client
+        if _health_check_client is not None:
+            logger.info("Closing health check HTTP client")
+            tasks.append(_health_check_client.aclose())
         if tasks:
             results = await asyncio.gather(*tasks, return_exceptions=True)
             for i, result in enumerate(results):
@@ -1449,9 +1722,22 @@ def perform_cleanup():
 
 atexit.register(perform_cleanup)
 
+
+def get_or_create_health_check_client() -> httpx.AsyncClient:
+    """Get or create a reusable HTTP client for health checks."""
+    global _health_check_client
+    if _health_check_client is None:
+        _health_check_client = httpx.AsyncClient(
+            timeout=10.0,
+            verify=False,
+            follow_redirects=True
+        )
+    return _health_check_client
+
+
 # --- Health Check Tools ---
 @app.tool(
-    description="Check if Turkish government legal database servers are operational",
+    description="Use this when checking if Turkish legal database servers are online and responding.",
     annotations={
         "readOnlyHint": True,
         "idempotentHint": True
@@ -1604,7 +1890,7 @@ async def check_government_servers_health() -> Dict[str, Any]:
 
 # --- MCP Tools for KVKK ---
 @app.tool(
-    description="Search KVKK data protection authority decisions",
+    description="Use this when searching Turkish data protection (KVKK/GDPR equivalent) decisions. For privacy, consent, and data breach cases.",
     annotations={
         "readOnlyHint": True,
         "openWorldHint": True,
@@ -1615,22 +1901,22 @@ async def search_kvkk_decisions(
     keywords: str = Field(..., description="Turkish keywords. Supports +required -excluded \"exact phrase\" operators"),
     page: int = Field(1, ge=1, le=50, description="Page number for results (1-50)."),
     # pageSize: int = Field(10, ge=1, le=20, description="Number of results per page (1-20).")
-) -> KvkkSearchResult:
+) -> Dict[str, Any]:
     """Search function for legal decisions."""
     logger.info(f"KVKK search tool called with keywords: {keywords}")
-    
+
     pageSize = 10  # Default value
-    
+
     search_request = KvkkSearchRequest(
         keywords=keywords,
         page=page,
         pageSize=pageSize
     )
-    
+
     try:
         result = await kvkk_client_instance.search_decisions(search_request)
         logger.info(f"KVKK search completed. Found {len(result.decisions)} decisions on page {page}")
-        return result
+        return result.model_dump()
     except Exception as e:
         logger.exception(f"Error in KVKK search: {e}")
         # Return empty result on error
@@ -1640,10 +1926,10 @@ async def search_kvkk_decisions(
             page=page,
             pageSize=pageSize,
             query=keywords
-        )
+        ).model_dump()
 
 @app.tool(
-    description="Get KVKK decision document in Markdown format with metadata extraction",
+    description="Use this when retrieving full text of a KVKK data protection decision. Returns paginated Markdown with metadata.",
     annotations={
         "readOnlyHint": True,
         "openWorldHint": False,
@@ -1653,10 +1939,10 @@ async def search_kvkk_decisions(
 async def get_kvkk_document_markdown(
     decision_url: str = Field(..., description="KVKK decision URL from search results"),
     page_number: int = Field(1, ge=1, description="Page number for paginated Markdown content (1-indexed, accepts int). Default is 1 (first 5,000 characters).")
-) -> KvkkDocumentMarkdown:
+) -> Dict[str, Any]:
     """Get KVKK decision as paginated Markdown."""
     logger.info(f"KVKK document retrieval tool called for URL: {decision_url}")
-    
+
     if not decision_url or not decision_url.strip():
         return KvkkDocumentMarkdown(
             source_url=HttpUrl("https://www.kvkk.gov.tr"),
@@ -1669,7 +1955,7 @@ async def get_kvkk_document_markdown(
             total_pages=0,
             is_paginated=False,
             error_message="Decision URL is required and cannot be empty."
-        )
+        ).model_dump()
     
     try:
         # Validate URL format
@@ -1685,11 +1971,11 @@ async def get_kvkk_document_markdown(
                 total_pages=0,
                 is_paginated=False,
                 error_message="Invalid KVKK decision URL format. URL must start with https://www.kvkk.gov.tr/"
-            )
-        
+            ).model_dump()
+
         result = await kvkk_client_instance.get_decision_document(decision_url, page_number or 1)
         logger.info(f"KVKK document retrieved successfully. Page {result.current_page}/{result.total_pages}, Content length: {len(result.markdown_chunk) if result.markdown_chunk else 0}")
-        return result
+        return result.model_dump()
         
     except Exception as e:
         logger.exception(f"Error retrieving KVKK document: {e}")
@@ -1704,11 +1990,11 @@ async def get_kvkk_document_markdown(
             total_pages=0,
             is_paginated=False,
             error_message=f"Error retrieving KVKK document: {str(e)}"
-        )
+        ).model_dump()
 
 # --- MCP Tools for BDDK (Banking Regulation Authority) ---
 @app.tool(
-    description="Search BDDK banking regulation decisions",
+    description="Use this when searching Turkish banking regulation (BDDK) decisions. For banking licenses, fintech, and payment services.",
     annotations={
         "readOnlyHint": True,
         "openWorldHint": True,
@@ -1760,7 +2046,7 @@ async def search_bddk_decisions(
         }
 
 @app.tool(
-    description="Get BDDK decision document as Markdown",
+    description="Use this when retrieving full text of a BDDK banking regulation decision. Returns paginated Markdown format.",
     annotations={
         "readOnlyHint": True,
         "openWorldHint": False,
@@ -1851,8 +2137,9 @@ def get_preview_text(markdown_content: str, skip_chars: int = 100, preview_chars
     
     return preview.strip()
 
+
 @app.tool(
-    description="DO NOT USE unless you are ChatGPT Deep Research. Search Turkish courts (Turkish keywords only). Supports: +term (must have), -term (exclude), \"exact phrase\", term1 OR term2",
+    description="Only for ChatGPT Deep Research. Use this when searching across all Turkish legal databases in a single query. Returns results in ChatGPT Deep Research compatible format (id, title, text, url). Supports: +term (must have), -term (exclude), \"exact phrase\", term1 OR term2. Use Turkish keywords for best results.",
     annotations={
         "readOnlyHint": True,
         "openWorldHint": True,
@@ -1861,7 +2148,7 @@ def get_preview_text(markdown_content: str, skip_chars: int = 100, preview_chars
 )
 async def search(
     query: str = Field(..., description="Turkish search query")
-) -> Dict[str, List[Dict[str, str]]]:
+) -> Dict[str, Any]:
     """
     Bedesten API search tool for ChatGPT Deep Research compatibility.
     
@@ -1975,17 +2262,37 @@ async def search(
         """
         
         logger.info(f"ChatGPT Deep Research search completed. Found {len(results)} results via Bedesten API.")
-        return {"results": results}
+        return {
+            "results": [
+                {
+                    "id": item["id"],
+                    "title": item["title"],
+                    "text": item["text"],
+                    "url": item["url"]
+                }
+                for item in results
+            ]
+        }
         
-    except Exception as e:
+    except Exception:
         logger.exception("Error in ChatGPT Deep Research search tool")
         # Return partial results if any were found
         if results:
-            return {"results": results}
+            return {
+                "results": [
+                    {
+                        "id": item["id"],
+                        "title": item["title"],
+                        "text": item["text"],
+                        "url": item["url"]
+                    }
+                    for item in results
+                ]
+            }
         raise
 
 @app.tool(
-    description="DO NOT USE unless you are ChatGPT Deep Research. Fetch document by ID. See docs for details",
+    description="Only for ChatGPT Deep Research. Use this when retrieving a Turkish legal document by ID. Returns full document in ChatGPT Deep Research compatible format (id, title, text, url, metadata).",
     annotations={
         "readOnlyHint": True,
         "openWorldHint": False,  # Retrieves specific documents, not exploring
@@ -2106,58 +2413,25 @@ async def fetch(
             doc = await bedesten_client_instance.get_document_as_markdown(doc_id)
         """
         
-    except Exception as e:
+    except Exception:
         logger.exception(f"Error fetching ChatGPT Deep Research document {id}")
         raise
 
 # --- Token Metrics Tool Removed for Optimization ---
 
-def ensure_playwright_browsers():
-    """Ensure Playwright browsers are installed for KIK tool functionality."""
-    try:
-        import subprocess
-        import os
-        
-        # Check if chromium is already installed
-        chromium_path = os.path.expanduser("~/Library/Caches/ms-playwright/chromium-1179")
-        if os.path.exists(chromium_path):
-            logger.info("Playwright Chromium browser already installed.")
-            return
-        
-        logger.info("Installing Playwright Chromium browser for KIK tool...")
-        result = subprocess.run(
-            ["python", "-m", "playwright", "install", "chromium"],
-            capture_output=True,
-            text=True,
-            timeout=300  # 5 minutes timeout
-        )
-        
-        if result.returncode == 0:
-            logger.info("Playwright Chromium browser installed successfully.")
-        else:
-            logger.warning(f"Failed to install Playwright browser: {result.stderr}")
-            logger.warning("KIK tool may not work properly without Playwright browsers.")
-            
-    except Exception as e:
-        logger.warning(f"Could not auto-install Playwright browsers: {e}")
-        logger.warning("KIK tool may not work properly. Manual installation: 'playwright install chromium'")
-
 def main():
     # Initialize the app properly with create_app()
     global app
     app = create_app()
-    
+
     logger.info(f"Starting {app.name} server via main() function...")
-    logger.info(f"Logs will be written to: {LOG_FILE_PATH}")
-    
-    # Ensure Playwright browsers are installed
-    ensure_playwright_browsers()
-    
+    # logger.info(f"Logs will be written to: {LOG_FILE_PATH}")  # File logging disabled
+
     try:
         app.run()
     except KeyboardInterrupt: 
         logger.info("Server shut down by user (KeyboardInterrupt).")
-    except Exception as e: 
+    except Exception: 
         logger.exception("Server failed to start or crashed.")
     finally:
         logger.info(f"{app.name} server has shut down.")

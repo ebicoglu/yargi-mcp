@@ -24,11 +24,24 @@ from starlette.middleware.base import BaseHTTPMiddleware
 # Import the proper create_app function that includes all middleware
 from mcp_server_main import create_app
 
-# Import Stripe webhook router
-from stripe_webhook import router as stripe_router
+# Conditional auth-related imports (only if auth enabled)
+_auth_check = os.getenv("ENABLE_AUTH", "false").lower() == "true"
 
-# Import simplified MCP Auth HTTP adapter
-from mcp_auth_http_simple import router as mcp_auth_router
+if _auth_check:
+    # Import MCP Auth HTTP adapter (OAuth endpoints)
+    try:
+        from mcp_auth_http_simple import router as mcp_auth_router
+    except ImportError:
+        mcp_auth_router = None
+
+    # Import Stripe webhook router
+    try:
+        from stripe_webhook import router as stripe_router
+    except ImportError:
+        stripe_router = None
+else:
+    mcp_auth_router = None
+    stripe_router = None
 
 # OAuth configuration from environment variables
 CLERK_ISSUER = os.getenv("CLERK_ISSUER", "https://clerk.yargimcp.com")
@@ -42,67 +55,65 @@ logger = logging.getLogger(__name__)
 # Configure CORS and Auth middleware
 cors_origins = os.getenv("ALLOWED_ORIGINS", "*").split(",")
 
-# Import FastMCP Bearer Auth Provider
-from fastmcp.server.auth import BearerAuthProvider
-from fastmcp.server.auth.providers.bearer import RSAKeyPair
-
-# Import Clerk SDK at module level for performance
-try:
-    from clerk_backend_api import Clerk
-    CLERK_SDK_AVAILABLE = True
-except ImportError:
-    CLERK_SDK_AVAILABLE = False
-    logger.warning("Clerk SDK not available - falling back to development mode")
-
 # Configure Bearer token authentication based on ENABLE_AUTH
 auth_enabled = os.getenv("ENABLE_AUTH", "false").lower() == "true"
 bearer_auth = None
 
-if CLERK_SECRET_KEY and CLERK_ISSUER:
-    # Production: Use Clerk JWKS endpoint for token validation
-    bearer_auth = BearerAuthProvider(
-        jwks_uri=f"{CLERK_ISSUER}/.well-known/jwks.json",
-        issuer=None,  # Disable issuer validation - Clerk uses different issuer format
-        algorithm="RS256",
-        audience=None,  # Disable audience validation - Clerk uses different audience format
-        required_scopes=[]  # Disable scope validation - Clerk JWT has ['read', 'search']
-    )
-    logger.info(f"Bearer auth configured with Clerk JWKS: {CLERK_ISSUER}/.well-known/jwks.json")
-else:
-    # Development: Generate RSA key pair for testing
-    logger.warning("No Clerk credentials found - using development RSA key pair")
-    dev_key_pair = RSAKeyPair.generate()
-    bearer_auth = BearerAuthProvider(
-        public_key=dev_key_pair.public_key,
-        issuer="https://dev.yargimcp.com",
-        audience="dev-mcp-server",
-        required_scopes=["yargi.read"]
-    )
-    
-    # Generate a test token for development
-    dev_token = dev_key_pair.create_token(
-        subject="dev-user",
-        issuer="https://dev.yargimcp.com",
-        audience="dev-mcp-server",
-        scopes=["yargi.read", "yargi.search"],
-        expires_in_seconds=3600 * 24  # 24 hours for development
-    )
-    logger.info(f"Development Bearer token: {dev_token}")
+# Only import and configure auth if enabled
+if auth_enabled:
+    # Import FastMCP JWT Verifier (handles both old and new FastMCP versions)
+    try:
+        # FastMCP 2.12+ uses JWTVerifier
+        from fastmcp.server.auth.providers.jwt import JWTVerifier, RSAKeyPair
+        AuthProviderClass = JWTVerifier
+    except ImportError:
+        try:
+            # Older FastMCP versions used BearerAuthProvider
+            from fastmcp.server.auth import BearerAuthProvider
+            from fastmcp.server.auth.providers.bearer import RSAKeyPair
+            AuthProviderClass = BearerAuthProvider
+        except ImportError:
+            logger.error("No compatible auth provider found in FastMCP")
+            AuthProviderClass = None
+            RSAKeyPair = None
 
-# Create MCP app with Bearer authentication
-mcp_server = create_app(auth=bearer_auth if auth_enabled else None)
+    # Import Clerk SDK at module level for performance
+    try:
+        from clerk_backend_api import Clerk
+        CLERK_SDK_AVAILABLE = True
+    except ImportError:
+        CLERK_SDK_AVAILABLE = False
+        logger.warning("Clerk SDK not available - falling back to development mode")
+
+    if AuthProviderClass:
+        if CLERK_SECRET_KEY and CLERK_ISSUER:
+            # Production: Use Clerk JWKS endpoint for token validation
+            bearer_auth = AuthProviderClass(
+                jwks_uri=f"{CLERK_ISSUER}/.well-known/jwks.json",
+                issuer=None,
+                algorithm="RS256",
+                audience=None,
+                required_scopes=[]
+            )
+        elif RSAKeyPair:
+            # Development: Generate RSA key pair for testing
+            dev_key_pair = RSAKeyPair.generate()
+            bearer_auth = AuthProviderClass(
+                public_key=dev_key_pair.public_key,
+                issuer="https://dev.yargimcp.com",
+                audience="dev-mcp-server",
+                required_scopes=["yargi.read"]
+            )
+else:
+    CLERK_SDK_AVAILABLE = False
+    logger.info("Authentication disabled (ENABLE_AUTH=false)")
+
+# Create MCP app with Bearer authentication (None if auth disabled)
+mcp_server = create_app(auth=bearer_auth)
 
 # Create MCP Starlette sub-application with root path - mount will add /mcp prefix
 mcp_app = mcp_server.http_app(path="/")
-logger.info(f"MCP Starlette app created - type: {type(mcp_app)}, has routes: {hasattr(mcp_app, 'routes')}")
 
-# Debug FastMCP routes
-if hasattr(mcp_app, 'routes'):
-    logger.info(f"MCP app route count: {len(mcp_app.routes)}")
-    for i, route in enumerate(mcp_app.routes):
-        logger.info(f"Route {i}: {route.path if hasattr(route, 'path') else 'unknown'} - {type(route)}")
-else:
-    logger.warning("MCP app has no routes attribute")
 
 # Configure JSON encoder for proper Turkish character support
 class UTF8JSONResponse(JSONResponse):
@@ -141,11 +152,12 @@ app = FastAPI(
     redirect_slashes=False  # Disable to prevent 307 redirects on /mcp endpoint
 )
 
-# Add Stripe webhook router to FastAPI
-app.include_router(stripe_router, prefix="/api/stripe")
+# Add auth-related routers to FastAPI (only if available)
+if stripe_router:
+    app.include_router(stripe_router, prefix="/api/stripe")
 
-# Add MCP Auth HTTP adapter to FastAPI (handles OAuth endpoints)
-app.include_router(mcp_auth_router)
+if mcp_auth_router:
+    app.include_router(mcp_auth_router)
 
 # Custom 401 exception handler for MCP spec compliance
 @app.exception_handler(401)
@@ -257,7 +269,6 @@ async def clerk_cors_proxy(request: Request, path: str):
             )
             
     except Exception as e:
-        logger.error(f"Clerk proxy error: {e}")
         return JSONResponse(
             {"error": "proxy_error", "message": str(e)},
             status_code=500,
@@ -451,7 +462,6 @@ async def status():
 # Simplified OAuth session validation for callback endpoints only
 async def validate_clerk_session_for_oauth(request: Request, clerk_token: str = None) -> str:
     """Validate Clerk session for OAuth callback endpoints only (not for MCP endpoints)"""
-    logger.info(f"OAuth callback session validation - token provided: {bool(clerk_token)}")
     
     try:
         # Use Clerk SDK if available
@@ -461,48 +471,33 @@ async def validate_clerk_session_for_oauth(request: Request, clerk_token: str = 
         
         # Try JWT token first (from URL parameter)
         if clerk_token:
-            logger.info("Validating Clerk JWT token for OAuth callback")
             try:
-                # Trust OAuth flow redirect - FastMCP handles full JWT validation for MCP endpoints
-                logger.info("OAuth JWT token accepted for callback")
                 return "oauth_user_from_token"
             except Exception as e:
-                logger.error(f"OAuth JWT token validation failed: {str(e)}")
-                # Fall through to cookie validation
-        
+                pass
+
         # Fallback to cookie validation
-        logger.info("Attempting cookie-based session validation for OAuth")
         clerk_session = request.cookies.get("__session")
         if not clerk_session:
-            logger.error("No Clerk session cookie found")
             raise HTTPException(status_code=401, detail="No Clerk session found")
-        
+
         # Validate session with Clerk
         session = clerk.sessions.verify_session(clerk_session)
-        logger.info(f"OAuth cookie session validation successful - user_id: {session.user_id}")
         return session.user_id
         
     except ImportError:
-        # Fallback for development without Clerk SDK
-        logger.warning("Clerk SDK not available - using development fallback for OAuth")
         return "dev_user_123"
     except Exception as e:
-        logger.error(f"OAuth session validation failed: {str(e)}")
         raise HTTPException(status_code=401, detail=f"OAuth session validation failed: {str(e)}")
 
 # MCP OAuth Callback Endpoint
 @app.get("/auth/mcp-callback")
 async def mcp_oauth_callback(request: Request, clerk_token: str = Query(None)):
     """Handle OAuth callback for MCP token generation"""
-    logger.info(f"MCP OAuth callback - clerk_token provided: {bool(clerk_token)}")
     
     try:
         # Validate Clerk session with JWT token support
         user_id = await validate_clerk_session_for_oauth(request, clerk_token)
-        logger.info(f"User authenticated successfully - user_id: {user_id}")
-        
-        # Use the Clerk JWT token directly (no need to generate custom token)
-        logger.info("User authenticated successfully via Clerk")
         
         # Return success response
         return HTMLResponse(f"""
@@ -538,7 +533,6 @@ async def mcp_oauth_callback(request: Request, clerk_token: str = Query(None)):
         """)
         
     except HTTPException as e:
-        logger.error(f"MCP OAuth callback failed: {e.detail}")
         return HTMLResponse(f"""
         <html>
             <head>
@@ -564,7 +558,6 @@ async def mcp_oauth_callback(request: Request, clerk_token: str = Query(None)):
         </html>
         """, status_code=e.status_code)
     except Exception as e:
-        logger.error(f"Unexpected error in MCP OAuth callback: {str(e)}")
         return HTMLResponse(f"""
         <html>
             <head>
@@ -609,8 +602,6 @@ app.mount("/mcp/", mcp_app)
 
 # Set the lifespan context after mounting
 app.router.lifespan_context = mcp_app.lifespan
-
-logger.info("MCP app mounted successfully at /mcp/")
 
 # Export for uvicorn
 __all__ = ["app"]

@@ -72,7 +72,10 @@ uv run simple_test.py                   # Simple individual tool test
 uv run measure_mcp_directly.py          # Measure MCP token overhead
 
 # Test KVKK module (uses fallback token if BRAVE_API_TOKEN not set)
-python test_kvkk_module.py              # Test KVKK search and document retrieval
+python test_kvkv_module.py              # Test KVKK search and document retrieval
+
+# Test KİK v2 comprehensive functionality
+uv run test_kik_v2_comprehensive.py     # Test all three KİK v2 decision types (uyusmazlik, duzenleyici, mahkeme)
 
 # MCP Optimization Testing
 uv run test_core_tools_quick.py         # Verify all tools work after optimization
@@ -182,7 +185,7 @@ This MCP server has undergone comprehensive optimization to minimize token overh
 4. **emsal_mcp_module**: Emsal (UYAP precedent) decisions
 5. **uyusmazlik_mcp_module**: Uyuşmazlık Mahkemesi (Jurisdictional Disputes Court)
 6. **anayasa_mcp_module**: Constitutional Court (both norm control and individual applications)
-7. **kik_mcp_module**: KİK (Public Procurement Authority) decisions
+7. **kik_mcp_module**: KİK (Public Procurement Authority) decisions with v2 API support for three decision types (uyusmazlik, duzenleyici, mahkeme)
 8. **rekabet_mcp_module**: Competition Authority decisions
 9. **kvkk_mcp_module**: KVKK (Personal Data Protection Authority) decisions - Brave API integration
 10. **bddk_mcp_module**: BDDK (Banking Regulation and Supervision Agency) decisions - Tavily API integration
@@ -465,6 +468,28 @@ doc8 = await get_kvkk_document_markdown(decision_url="https://www.kvkk.gov.tr/Ic
   - Set environment variable: `export BRAVE_API_TOKEN=your_api_token_here`
   - **Fallback Token**: If not set, uses a limited free token automatically
   - KVKK search tools will work without configuration (with rate limits)
+
+### Rate Limits
+
+| API | Rate Limit | Notes |
+|-----|------------|-------|
+| Bedesten Unified | Unknown | Ministry of Justice API - no documented limits |
+| Yargıtay Primary | Unknown | Official government API |
+| Danıştay | Unknown | Official government API |
+| Anayasa Mahkemesi | Unknown | Constitutional Court API |
+| KİK v2 | Unknown | Public Procurement Authority API |
+| Rekabet Kurumu | Unknown | Competition Authority API |
+| Sayıştay | Unknown | Court of Accounts API |
+| Uyuşmazlık | Unknown | Jurisdictional Disputes Court API |
+| Emsal | Unknown | UYAP Precedent Database API |
+| KVKK (Brave) | 1,000/month | Brave Search API free tier limit |
+| BDDK | Unknown | Banking Regulation API |
+
+**Recommendations:**
+- Implement client-side caching for repeated queries
+- Use pagination parameters to limit result sizes
+- Space out requests during bulk operations
+- Consider implementing retry logic with exponential backoff
 
 ### OAuth Authentication Configuration
 
@@ -1077,15 +1102,21 @@ yargi-mcp
 
 
 ### Date Filtering Format (Bedesten API)
-All Bedesten API tools support consistent date filtering:
-- **Format**: ISO 8601 with Z timezone: `YYYY-MM-DDTHH:MM:SS.000Z`
+All Bedesten API tools support consistent date filtering with **automatic format conversion**:
+- **Accepted Formats**: 
+  - Simple format: `YYYY-MM-DD` (e.g., `2020-01-01`) - **automatically converted**
+  - Full ISO 8601: `YYYY-MM-DDTHH:MM:SS.000Z` (e.g., `2020-01-01T00:00:00.000Z`)
+- **Automatic Conversion**: ✅ **NEW FEATURE** - Simple dates are automatically converted to ISO 8601 format
+  - Start dates: `2020-01-01` → `2020-01-01T00:00:00.000Z`
+  - End dates: `2020-01-01` → `2020-01-01T23:59:59.999Z`
 - **Parameters**: `kararTarihiStart` (start date) and `kararTarihiEnd` (end date)
 - **Usage**: Both parameters are optional, use together for date ranges or single parameter for one-sided filtering
 - **Examples**:
-  - Single date: `kararTarihiStart="2024-06-25T00:00:00.000Z", kararTarihiEnd="2024-06-25T23:59:59.999Z"`
-  - Year range: `kararTarihiStart="2024-01-01T00:00:00.000Z", kararTarihiEnd="2024-12-31T23:59:59.999Z"`
-  - From date: `kararTarihiStart="2024-01-01T00:00:00.000Z"` (no end date)
-  - Until date: `kararTarihiEnd="2024-12-31T23:59:59.999Z"` (no start date)
+  - **Simple format**: `kararTarihiStart="2024-06-25", kararTarihiEnd="2024-06-25"` ✅ **Works automatically**
+  - **Year range**: `kararTarihiStart="2024-01-01", kararTarihiEnd="2024-12-31"` ✅ **Auto-converted**
+  - **Full ISO format**: `kararTarihiStart="2024-01-01T00:00:00.000Z", kararTarihiEnd="2024-12-31T23:59:59.999Z"`
+  - **From date**: `kararTarihiStart="2024-01-01"` (no end date)
+  - **Until date**: `kararTarihiEnd="2024-12-31"` (no start date)
 
 ### Exact Phrase Search Format (Bedesten API)
 All Bedesten API tools support two types of phrase searching:
@@ -1542,12 +1573,24 @@ This ASGI support transforms the Yargı MCP server into a versatile web service 
 **Authentication**: ✅ **OAuth 2.0 + Bearer JWT** - Cross-origin authentication working
 **Last Updated**: 2025-01-21 - All critical issues resolved
 
+**Free Deployment**: `https://yargi-mcp-free.fly.dev` - No authentication required
+**Status**: ✅ **OPERATIONAL** - Authorization disabled for open access
+**Use Case**: Development, testing, and open-source usage without OAuth setup
+
 #### Live Production Endpoints
+
+**Authenticated Deployment (api.yargimcp.com)**:
 - **Health Check**: https://api.yargimcp.com/health
 - **OAuth Login**: https://api.yargimcp.com/auth/login  
 - **MCP Endpoint (HTTP)**: https://api.yargimcp.com/mcp/
 - **MCP Endpoint (SSE)**: https://api.yargimcp.com/sse/
 - **OAuth Discovery**: https://api.yargimcp.com/.well-known/oauth-authorization-server
+
+**Free Deployment (yargi-mcp-free.fly.dev)**:
+- **Health Check**: https://yargi-mcp-free.fly.dev/health
+- **MCP Endpoint (HTTP)**: https://yargi-mcp-free.fly.dev/mcp/
+- **MCP Endpoint (SSE)**: https://yargi-mcp-free.fly.dev/sse/
+- **Direct Access**: No authentication required - immediate usage
 
 ### Redis Configuration (Fly.io Native Upstash) ✅
 
@@ -1631,6 +1674,8 @@ ENABLE_AUTH=true
 ```
 
 #### MCP Connection Details for Claude AI
+
+**Authenticated Production (api.yargimcp.com)**:
 ```
 MCP Server URL (HTTP): https://api.yargimcp.com/mcp/
 MCP Server URL (SSE): https://api.yargimcp.com/sse/
@@ -1638,6 +1683,15 @@ OAuth Authorization: https://api.yargimcp.com/authorize
 Token Exchange: https://api.yargimcp.com/token
 Authentication: OAuth 2.0 with PKCE + JWT tokens + Bearer JWT (optional)
 Transports: HTTP (Streamable) + SSE (Server-Sent Events)
+```
+
+**Free Open Access (yargi-mcp-free.fly.dev)**:
+```
+MCP Server URL (HTTP): https://yargi-mcp-free.fly.dev/mcp/
+MCP Server URL (SSE): https://yargi-mcp-free.fly.dev/sse/
+Authentication: None - Direct access
+Transports: HTTP (Streamable) + SSE (Server-Sent Events)
+Use Case: Development, testing, immediate usage without OAuth setup
 ```
 
 #### SSE Transport Implementation ✅
@@ -2031,7 +2085,7 @@ build-backend = "setuptools.build_meta"
 4. **Emsal**: 2 tools (search + document)
 5. **Uyuşmazlık**: 2 tools (search + document)
 6. **Constitutional Court**: ✅ 2 tools (unified norm control + individual applications) - **NEWLY UNIFIED**
-7. **KİK**: 2 tools (search + document)
+7. **KİK**: 2 tools (search + document) - **v2 API with three decision types: uyusmazlik, duzenleyici, mahkeme** ✅
 8. **Competition Authority**: 2 tools (search + document)
 9. **KVKK**: 2 tools (search + document)
 10. **Sayıştay**: 4 tools (3 search types + document)
@@ -2068,6 +2122,52 @@ build-backend = "setuptools.build_meta"
   - ✅ 308 redirect for /mcp endpoint
   - ✅ Session management and tool discovery
 - **Claude AI**: Successfully connects and uses all Turkish legal database tools
+
+#### ✅ Bedesten Tools Null Safety Fixes (Completed - Jul 23, 2025)
+- **Issue**: TypeError "cannot convert undefined or null to object" in Bedesten search and document tools
+- **Root Cause**: API responses containing null/undefined fields without proper validation
+- **Fixes Applied**:
+  - ✅ **Search Function**: Added null safety checks for `response.data.emsalKararList` and `response.data.total`
+  - ✅ **Document Function**: Added comprehensive validation for `doc_response.data`, `content`, and `mimeType` fields
+  - ✅ **Error Handling**: Added descriptive error messages and graceful fallbacks
+  - ✅ **Base64 Decoding**: Protected base64 operations with try-catch blocks
+- **Result**: Bedesten tools now handle API edge cases gracefully without crashing
+- **Production Status**: Deployed and operational on api.yargimcp.com
+
+#### ✅ Automatic Date Format Conversion (Completed - Sep 2, 2025)
+- **Issue**: Bedesten API requires ISO 8601 format with timezone, but users were providing simple dates
+- **Problem**: Queries like `kararTarihiStart="2020-01-01"` returned "No data returned from Bedesten API"
+- **Root Cause**: Simple date format `YYYY-MM-DD` not converted to required `YYYY-MM-DDTHH:MM:SS.000Z` format
+- **Solution Applied**: ✅ **Automatic Date Format Conversion** in `search_bedesten_unified`
+  - **Start dates**: `2020-01-01` → `2020-01-01T00:00:00.000Z` (beginning of day)
+  - **End dates**: `2020-01-01` → `2020-01-01T23:59:59.999Z` (end of day)
+  - **Backwards compatible**: Full ISO 8601 dates still work unchanged
+  - **Smart detection**: Only converts if date doesn't already end with 'Z'
+- **Benefits**: 
+  - ✅ **User-friendly**: Simple date input now works seamlessly
+  - ✅ **Inclusive ranges**: End dates include the entire specified day
+  - ✅ **No breaking changes**: Existing ISO 8601 usage unaffected
+- **Production Status**: Deployed on api.yargimcp.com - **Version 353**
+
+#### ✅ KİK v2 MCP Implementation Testing (Completed - Sep 2, 2025)
+- **Issue**: Test KİK v2 MCP implementation with all three decision types
+- **Request**: "üç karar türü ile de mcpyi test et" (test the MCP with all three decision types)  
+- **Decision Types Tested**:
+  - ✅ **uyusmazlik** (dispute) - 500 decisions found and searchable
+  - ✅ **duzenleyici** (regulatory) - 8 decisions found and searchable  
+  - ✅ **mahkeme** (court) - 318 decisions found and searchable
+- **Total Coverage**: 826 decisions across all three decision types
+- **SSL Issues**: ✅ Resolved with legacy server connect configuration  
+- **API Endpoints**: All three endpoints working correctly
+  - `/api/KurulKararlari/GetKurulKararlari` (uyusmazlik)
+  - `/api/KurulKararlari/GetKurulKararlariDk` (duzenleyici)  
+  - `/api/KurulKararlari/GetKurulKararlariMk` (mahkeme)
+- **Hash Analysis**: Comprehensive testing performed to understand document ID encryption
+  - Tested various hash generation patterns (SHA256, HMAC, composite hashes)
+  - Angular/cryptoService.encrypt() style approaches tested
+  - Hash eşleşmesi bulunamadı - client-side session data veya farklı algoritma kullanılıyor olabilir
+- **Result**: ✅ KİK v2 MCP implementation fully operational for all three decision types
+- **Production Status**: All tests passing, search functionality working, ready for production deployment
 
 ### Key Features
 - **FastMCP Framework**: Modern MCP server implementation
